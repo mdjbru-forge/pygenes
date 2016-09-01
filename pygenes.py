@@ -16,6 +16,19 @@ import hashlib
 import StringIO
 from Bio import SeqIO
 
+### ** Colors
+
+# http://stackoverflow.com/questions/287871/print-in-terminal-with-colors-using-python
+class PC:
+    H = '\033[95m' # header (purple)
+    B = '\033[94m' # blue
+    G = '\033[92m' # green
+    W = '\033[93m' # warning (yellow)
+    F = '\033[91m' # fail (red)
+    E = '\033[0m' # end colors
+    BD = '\033[1m' # bold
+    U = '\033[4m' # underlined
+
 ### * Functions
 
 ### ** seqDistance(seq1, seq2)
@@ -583,9 +596,23 @@ def extractCodingSeqFast(CDS, seqRecord) :
         sys.stderr.write("Predictd: " + translated.strip("*") + "\n")
     seq = seq[0:exp_len]
     if not str(seq.translate(table= 11)[1:]).replace("*", "U") == expected[1:] :
-        print(seq.translate(table= 11))
-        print(expected)
-        sys.exit(1)
+        # Check if padding at the beginning of the sequence makes sense
+        checked = False
+        for i in [1, 2, 3]:
+            seq = "n" + seq
+            translated = str(seq.translate(table = 11).strip("*X"))
+            print("")
+            print(translated)
+            print(expected)
+            print("")
+            if translated in expected:
+                checked = True
+        if not checked:
+            print(seq.translate(table= 11))
+            print(expected)
+            print(CDS)
+            print(PC.F + "ERROR HERE - MISMATCH IN TRANSLATIONS! (but continuing)" + PC.E)
+            #sys.exit(1)
     return str(seq)
 
 ### ** compareExpPredProt(exp, pred)
@@ -1033,8 +1060,8 @@ Gene = collections.namedtuple("Gene", ["recordId", "peptideSeq", "codingSeq",
                                        "translationTable", "gene", "product",
                                        "proteinId", "function", "essentiality",
                                        "peptideHash", "mergedPeptideHash",
-                                       "geneId"])
-Gene.__new__.__defaults__ = ("None", ) * 14
+                                       "geneId", "geneOntology"])
+Gene.__new__.__defaults__ = ("None", ) * 15
 
 Record = collections.namedtuple("Record", ["recordId", "strainName", "database",
                                            "sequence", "organism", "description",
@@ -1297,6 +1324,32 @@ class RecordTable(ObjectTable) :
         d["length"] = len(d["sequence"])
         self.items.append(Record(**d))
 
+### *** addEnsemblRecord(self, ensemblRecord)
+
+    def addEnsemblRecord(self, ensemblRecord) :
+        """Add an Ensembl record data
+
+        Args:
+            ensemblRecord: Path to Ensembl file (can be gzipped if ends with ".gz")
+        """
+        # Load the record
+        ensemblRecordPath = ensemblRecord
+        if (ensemblRecord.endswith(".gz")):
+            with gzip.open(ensemblRecord, "r") as gzFi:
+                ensemblRecord = StringIO.StringIO(gzFi.read())
+        record = list(SeqIO.parse(ensemblRecord, "genbank"))[0]
+        # Gather the data
+        d = dict()
+        d["recordId"] = "Accessions:" + "____".join(record.annotations["accessions"])
+        d["strainName"] = record.annotations.get("source", "NA")
+        d["database"] = "Ensembl"
+        d["sequence"] = str(record.seq)
+        d["organism"] = record.annotations.get("organism", "NA")
+        d["description"] = record.description
+        d["references"] = "Ensembl filename: " + os.path.basename(ensemblRecordPath)
+        d["length"] = len(d["sequence"])
+        self.items.append(Record(**d))
+
 ### *** streamEMBLRecord(self, EMBLRecord, outFile, headers)
 
     def streamEMBLRecord(self, EMBLRecord, outFile, headers) :
@@ -1399,6 +1452,67 @@ class GeneTable(ObjectTable) :
                   geneId = geneId,
                   translationTable = ";".join(CDS.qualifiers.get("transl_table", ["None"])),
                   gene = ";".join(CDS.qualifiers.get("gene", ["None"])),
+                  product = ";".join(CDS.qualifiers.get("product", ["None"])),
+                  proteinId = ";".join(CDS.qualifiers.get("protein_id", ["None"])))
+                self.items.append(gene)
+
+### *** parseEnsemblRecord(self, ensemblRecord, hashConstructor = hashlib.md5)
+
+    def parseEnsemblRecord(self, ensemblRecord, hashConstructor = hashlib.md5) :
+        """Parse the content of an Ensembl record (one file containing a genome
+        assembly)
+
+        Args:
+            ensemblRecord: Path to an Ensembl file or a list of paths to Ensebml 
+              files. Files can be gzipped (they must end with ".gz" in this 
+              case).
+            hashConstructor (from hashlib module): If not None, used to 
+              calculate hash for each peptide sequence
+
+        """
+        # TODO: Set simplifiedSeqs to None when new sequences are parsed?
+        if isinstance(ensemblRecord, list) :
+            for r in ensemblRecord :
+                self.parseEnsemblRecord(r, hashConstructor)
+            return None
+        # Loading one file
+        self.nParsedRecords += 1
+        msg = "Parsing Ensembl record " + str(self.nParsedRecords)
+        self.stderr.write(PC.G + msg + "\n" + PC.E)
+        if (ensemblRecord.endswith(".gz")):
+            with gzip.open(ensemblRecord, "r") as gzFi:
+                ensemblRecord = StringIO.StringIO(gzFi.read())
+        ensemblRecord = list(SeqIO.parse(ensemblRecord, "genbank"))
+        # Going through the multiple records in the file, if any
+        for record in ensemblRecord:
+            allCDS = [x for x in record.features if x.type == "CDS"]
+            for CDS in allCDS :
+                # Get the peptide sequence and build the hash
+                peptideSeq = ";".join(CDS.qualifiers.get("translation", ["None"]))
+                if hashConstructor is not None :
+                    h = hashConstructor()
+                    h.update(peptideSeq)
+                    peptideHash = h.hexdigest()
+                else :
+                    peptideHash = "None"
+                # Get the accessions for the current record 
+                recordId = "Accessions:" + "____".join(record.annotations["accessions"])
+                location = str(CDS.location)
+                h = hashlib.md5()
+                h.update(recordId + location)
+                geneId = h.hexdigest()
+                goTerms = [x for x in CDS.qualifiers.get("db_xref", []) if x.startswith("GO:")]
+                goTerms = "|".join(goTerms)
+                gene = self.itemType(recordId = recordId,
+                  peptideSeq = peptideSeq,
+                  peptideHash = peptideHash,
+                  peptideLength = str(len(";".join(CDS.qualifiers.get("translation", ["None"])))),
+                  codingSeq = extractCodingSeqFast(CDS, record),
+                  location = location,
+                  geneId = geneId,
+                  translationTable = ";".join(CDS.qualifiers.get("transl_table", ["None"])),
+                  gene = ";".join(CDS.qualifiers.get("gene", ["None"])),
+                  geneOntology = goTerms,
                   product = ";".join(CDS.qualifiers.get("product", ["None"])),
                   proteinId = ";".join(CDS.qualifiers.get("protein_id", ["None"])))
                 self.items.append(gene)
