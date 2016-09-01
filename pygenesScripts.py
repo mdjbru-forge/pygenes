@@ -54,6 +54,20 @@ def makeParser() :
     sp_parseGB.add_argument("-r", "--records", metavar = "FILE", type = str,
                           help = "Output file for record table")
     sp_parseGB.set_defaults(action = "parseGB")
+### ** Parse Ensembl records
+    sp_parseEnsembl = subparsers.add_parser("parseEnsembl",
+                                     description = "Parse Ensembl records into "
+                                     "a gene table.",
+                                     help = "Parse Ensembl records to a table")
+    sp_parseEnsembl.add_argument("ensemblRecords",
+                                 metavar = "ENSEMBL_RECORD", nargs = "+",
+                          type = str,
+                          help = "Ensembl records")
+    sp_parseEnsembl.add_argument("-g", "--genes", metavar = "FILE", type = str,
+                          help = "Output file for gene table")
+    sp_parseEnsembl.add_argument("-r", "--records", metavar = "FILE", type = str,
+                          help = "Output file for record table")
+    sp_parseEnsembl.set_defaults(action = "parseEnsembl")
 ### ** Parse EMBL records
     sp_parseEMBL = subparsers.add_parser("parseEMBL",
                                      description = "Parse EMBL records into "
@@ -154,6 +168,7 @@ def main(args = None, stdout = None, stderr = None) :
         stderr = sys.stderr
     dispatch = dict()
     dispatch["parseGB"] = main_parseGB
+    dispatch["parseEnsembl"] = main_parseEnsembl
     dispatch["parseEMBL"] = main_parseEMBL
     dispatch["SQL_EMBL"] = main_SQL_EMBL
     dispatch["hash"] = main_hash
@@ -179,6 +194,27 @@ def main_parseGB(args, stdout, stderr) :
         recordTable = pygenes.RecordTable()
         for r in args.gbRecords :
             recordTable.addGenBankRecord(r)
+        stderr.write("Writing record table\n")
+        recordTable.writeTable(args.records)
+    sys.exit(0)
+
+### ** Main parseEnsembl
+
+def main_parseEnsembl(args, stdout, stderr) :
+    if args.genes is None and args.records is None :
+        msg = "You should use at least one of -g or -r. Use -h for help.\n"
+        stdout.write(msg)
+        sys.exit(0)
+    if args.genes is not None :
+        geneTable = pygenes.GeneTable()
+        geneTable.parseEnsemblRecord(args.ensemblRecords)
+        stderr.write("Calculating geneId hash\n")
+        geneTable.writeTable(args.genes)
+    if args.records is not None :
+        stderr.write("Getting record items\n")
+        recordTable = pygenes.RecordTable()
+        for r in args.ensemblRecords :
+            recordTable.addEnsemblRecord(r)
         stderr.write("Writing record table\n")
         recordTable.writeTable(args.records)
     sys.exit(0)
