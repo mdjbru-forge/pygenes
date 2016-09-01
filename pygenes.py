@@ -13,6 +13,7 @@ import warnings
 import os
 import gzip
 import hashlib
+import StringIO
 from Bio import SeqIO
 
 ### * Functions
@@ -966,7 +967,8 @@ def parseEMBLtoSQL(emblFile, SQLiteCursor) :
     filename = os.path.basename(emblFile)
     if filename.endswith(".gz") :
         filename = filename[-3:]
-    rows = list()
+    draft_rows = list()
+    final_rows = list()
     # Collect the data
     for record in EMBLRecord :
         recordId = record.id
@@ -993,14 +995,33 @@ def parseEMBLtoSQL(emblFile, SQLiteCursor) :
                    CDS.qualifiers.get("gene", ["null"])[0],
                    CDS.qualifiers.get("product", ["null"])[0],
                    CDS.qualifiers.get("protein_id", ["null"])[0])
-            rows.append(row)
+            draft_rows.append(row)
+    # Process the peptide data
+    for cds in draft_rows :
+        pepSeq = cds[1]
+        pepLen = cds[3]
+        # Check if this peptide already exists in the db
+        SQLiteCursor.execute("SELECT rowid FROM Peptides WHERE pepSeq = ?", (pepSeq, ))
+        peptide_rowid_list = SQLiteCursor.fetchall()
+        if len(peptide_rowid_list) == 0 :
+            # Insert the new peptide
+            SQLiteCursor.execute("INSERT INTO Peptides (pepSeq, pepLen, "
+                                 "mergedPeptides_id) VALUES ("
+                                 "?, ?, ?)", (pepSeq, pepLen, "null"))
+            peptide_rowid = SQLiteCursor.lastrowid
+        else :
+            assert len(peptide_rowid_list) == 1
+            peptide_rowid = peptide_rowid_list[0][0]
+        row = (cds[0], peptide_rowid, cds[2], cds[4], cds[5], cds[6], cds[7],
+               cds[8])
+        final_rows.append(row)
     # Store into the database
     SQLiteCursor.executemany("INSERT INTO Cds ("
-                             "record_id, pepSeq, nucSeq, pepLen, location, "
-                             "translationTable, geneName, productName, "
-                             "productAccNum) VALUES ("
-                             "?, ?, ?, ?, ?, ?, ?, ?, ?" 
-                             ")", rows)
+                             "record_id, peptide_rowid, nucSeq, "
+                             "location, translationTable, geneName, "
+                             "productName, productAccNum) VALUES ("
+                             "?, ?, ?, ?, ?, ?, ?, ?" 
+                             ")", final_rows)
 
 ### * Named tuples
 
@@ -1351,6 +1372,9 @@ class GeneTable(ObjectTable) :
             msg = "Parsing GenBank record " + str(self.nParsedRecords)
             self.stderr.write(msg + "\n")
             if isinstance(gbRecord, str) :
+                if (gbRecord.endswith(".gz")):
+                    with gzip.open(gbRecord, "r") as gzFi:
+                        gbRecord = StringIO.StringIO(gzFi.read())
                 gbRecord = SeqIO.read(gbRecord, "genbank")
             allCDS = [x for x in gbRecord.features if x.type == "CDS"]
             for CDS in allCDS :
